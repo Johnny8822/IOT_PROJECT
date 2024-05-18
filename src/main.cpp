@@ -1,137 +1,205 @@
 #include <Arduino.h>
-#include <WiFi.h> 
-#include <ArduinoJson.h>  
-#include <HTTPClient.h>  
-#include <DallasTemperature.h> 
-#include <OneWire.h> 
-#include "env.h" 
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include "env.h"
 
-const int temp_sensor_pin = 4; 
-const int PIR_pin = 15; 
-const int light_pin = 22; 
-const int fan_pin = 23;
+bool sensorState = false;
+int sensorValue;
 
-OneWire oneWire(temp_sensor_pin);  
-DallasTemperature sensors(&oneWire); 
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature sensors(&oneWire);
+
+float temp(){
+  sensors.requestTemperatures();
+  float x = sensors.getTempCByIndex(0);
+  return x;
+}
+
+bool presence(){
+  int person_in_room;
+  sensorValue = digitalRead(sensorPin);
+
+  if (sensorValue == HIGH) {
+    delay(100);
+    
+    if (sensorState == false) {
+      sensorState = true;
+
+    }
+  } 
+  else {
+      delay(200);
+      
+      if (sensorState == true){
+        sensorState = false;
+    }
+  }
+
+  return sensorState;
+}
 
 
+void postSensorData(float temp, bool presence){
+  HTTPClient http;
+  String requestBody;
 
-void getOutputDevices(){ 
-  HTTPClient http;  
-  http.begin(endpoint); 
-  String RequestBody;   
+  String new_endpoint;
+  String path = "/sensorData";
+  new_endpoint = endpoint + path,
+
+  http.begin(new_endpoint);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("Content-Length", "62");
+
+  JsonDocument doc;
+
+  doc["temperature"] = temp;
+  doc["presence"] = presence;
+
+  doc.shrinkToFit();
+
+  serializeJson(doc, requestBody);
+
+  int httpResponseCode = http.POST(requestBody);
+  
+  Serial.print("HERE IS THE RESPONSE: ");
+  Serial.println(http.getString());
+  Serial.println();
+
+  http.end();
+}
+
+void getFanData(){
+  HTTPClient http;
+
+  String new_endpoint;
+  String path = "/fan";
+  new_endpoint = endpoint + path,
+
+  http.begin(new_endpoint);
 
   int httpResponseCode = http.GET();
-  if (httpResponseCode>0) {
+
+  if(httpResponseCode > 0) {
     Serial.print("HTTP Response code: ");
     Serial.println(httpResponseCode);
-    String responseBody = http.getString(); 
-    Serial.println(responseBody); 
-    
-    JsonDocument doc; 
 
-    DeserializationError error = deserializeJson(doc, responseBody); 
+    String responseBody = http.getString();
+    Serial.println(responseBody);
+
+    JsonDocument doc;
+
+    DeserializationError error = deserializeJson(doc, responseBody);
 
     if (error) {
-  Serial.print("deserializeJson() failed: ");
-  Serial.println(error.c_str());
-  return; 
-  } 
-    bool fan_state = doc["fan"];  
-    digitalWrite(fan_pin, fan_state); 
+      Serial.print("deserializeJson() failed: ");
+      Serial.println(error.c_str());
+      return;
+    }
+
+    const bool fan_ctrl = doc["fan"]; 
+
+    digitalWrite(fan, fan_ctrl); 
     
-    bool light_state = doc["light"]; 
-    digitalWrite(light_pin, light_state); 
-  } 
-  http.end();
+    }
+    else{
+      Serial.print("Error Code: ");
+      Serial.println(httpResponseCode);
+    }
+  
+    http.end();
+
 }
 
-// put function declarations here:
-void getLight(){
-  
-  HTTPClient http;  
-  http.begin(endpoint); 
-  
-  String RequestBody;  
+void getLightData(){
 
- int httpResponseCode = http.GET();
-  if (httpResponseCode>0) {
+  HTTPClient http;
+
+  String new_endpoint;
+  String path = "/light";
+  new_endpoint = endpoint + path,
+
+  http.begin(new_endpoint);
+
+  int httpResponseCode = http.GET();
+
+  if(httpResponseCode > 0) {
+
     Serial.print("HTTP Response code: ");
     Serial.println(httpResponseCode);
-    String responseBody = http.getString(); 
-    Serial.println(responseBody); 
-    
-    JsonDocument doc; 
 
-    DeserializationError error = deserializeJson(doc, responseBody); 
+    String responseBody = http.getString();
+    Serial.println(responseBody);
+
+    JsonDocument doc;
+
+    DeserializationError error = deserializeJson(doc, responseBody);
 
     if (error) {
-  Serial.print("deserializeJson() failed: ");
-  Serial.println(error.c_str());
-  return; 
-  } 
+      Serial.print("deserializeJson() failed: ");
+      Serial.println(error.c_str());
+      return;
+    }
 
-     bool light_state = doc["light"]; 
-    digitalWrite(light_pin, light_state); 
-  } 
-  http.end();
+    const bool light_ctrl = doc["light"]; 
+
+    digitalWrite(light, light_ctrl);
+
+    }
+    else{
+      Serial.print("Error Code: ");
+      Serial.println(httpResponseCode);
+    }
+  
+    http.end();
+
 }
- 
-
-
-
-
-// void putTemp(){
-//     HTTPClient http;  
-//   http.begin((String)baseurl + "api/temp"); 
-//   http.addHeader("api-key", api_key);  
-//   http.addHeader("Content-Type", "application/json"); 
-//   String RequestBody;  
-
- 
-//  String RequestBody;  
-
-//   JsonDocument doc;  
-//   doc ["temp"] = sensors.getTempCByIndex(0); 
-//   doc.shrinkToFit(); 
-//   serializeJson(doc, RequestBody); 
-//   int httpResponseCode = http.PUT(); 
-// }
-
 
 
 void setup() {
-  // put your setup code here, to run once: 
-  pinMode(light_pin, OUTPUT);
-  pinMode(fan_pin, OUTPUT);
-  pinMode(PIR_pin,INPUT);
-  pinMode(temp_sensor_pin,INPUT);
-
+  Serial.begin(9600);
   
-  Serial.begin(9600); 
-  sensors.begin(); 
-  sensors.setWaitForConversion(true); 
-  delay(1000);
-   
-
+  // WiFi_SSID and WIFI_PASS should be stored in the env.h
   WiFi.begin(ssid, password);
   Serial.println("Connecting");
-  while(WiFi.status() != WL_CONNECTED) {
-    delay(500);
+
+  while(WiFi.status() != WL_CONNECTED) 
+  {
+    delay(1000);
     Serial.print(".");
   }
+
   Serial.println("");
   Serial.print("Connected to WiFi network with IP Address: ");
   Serial.println(WiFi.localIP());
-  
 
+  
+  pinMode(light, OUTPUT);
+  pinMode(sensorPin, INPUT);
+  pinMode(fan,OUTPUT);
 }
 
 void loop() {
+
   //Check WiFi connection status
   if(WiFi.status()== WL_CONNECTED){
-  getOutputDevices();
-  } 
+    delay(200);
+    bool pir = presence();
+    float temperature = temp();
+    postSensorData(temperature,pir);
+    delay(5000);
+
+    getFanData();
+    getLightData();
+    delay(5000);
+  }
+  else {
+    Serial.println("WiFi Disconnected");
+  }
+}
   else {
     Serial.println("WiFi Disconnected");
   }
