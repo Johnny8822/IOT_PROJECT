@@ -24,8 +24,7 @@ app = FastAPI()
 format = "%Y-%m-%d %H:%M:%S %Z%z"
 
 origins = ["http://127.0.0.1:8000", 
-           "https://simple-smart-hub-client.netlify.app",
-           "http://192.168.102.46:8000"]
+           "https://simple-smart-hub-client.netlify.app"]
 
 app.add_middleware(
     CORSMiddleware,
@@ -71,7 +70,9 @@ def parse_time(time_str):
 
  
 def convert24(time):
-    t = datetime.strptime(time, '%H:%M:%S')
+    # Parse the time string into a datetime object
+    t = datetime.strptime(time, '%I:%M:%S %p')
+    # Format the datetime object into a 24-hour time string
     return t.strftime('%H:%M:%S')
 
 def sunset_calculation():
@@ -85,9 +86,9 @@ def sunset_calculation():
     return sunset_24
 
 # get request to collect environmental data from ESP
-@app.get("/graph", status_code=200)
+@app.get("/graph")
 async def get_data(size: int = None):
-    data = await db["sensorData"].find().to_list(size)
+    data = await db["data"].find().to_list(size)
     return TypeAdapter(List[sensorData]).validate_python(data)
 
 @app.put("/settings", status_code=200)
@@ -99,8 +100,6 @@ async def update_settings(settings_update: Settings = Body(...)):
 
     duration = parse_time(settings_update.light_duration)
     settings_update.light_time_off = (user_light + duration).strftime("%H:%M:%S")
-    
-
     all_settings = await db["settings"].find().to_list(999)
     if len(all_settings)==1:
         db["settings"].update_one({"_id":all_settings[0]["_id"]},{"$set":settings_update.model_dump(exclude = ["light_duration"])})
@@ -116,17 +115,78 @@ async def update_settings(settings_update: Settings = Body(...)):
     
 @app.post("/sensorData",status_code=201)
 async def createSensorData(sensor_data:sensorData):
-    entry_time = datetime.now().strftime("%H:%M:%S")
+    entry_time = datetime.now().string("%H:%M:%S")
     sensor_data_ = sensor_data.model_dump()
     sensor_data_["datetime"] = entry_time
-    new_data = await db["sensorData"].insert_one(sensor_data_)
+    new_data = await db["sensorData"].insert_one(sensor_data.model_dump())
     created_data = await db["sensorData"].find_one({"_id": new_data.inserted_id})
     return sensorData(**created_data)
 
-@app.get("/fan", status_code=200)
+
+
+@app.get("/sensorData", status_code=200)
+async def turn_on_components():
+    data = await db["data"].find().to_list(999)
+
+    # to use last entry in database
+    last = len(data) - 1
+    sensor_data = data[last]
+
+    settings = await db["settings"].find().to_list(999)
+    
+    user_setting = settings[0]
+
+    # if someone is in the room, should stuff turn on?
+    if (sensor_data["presence"] == True):
+        # if temperature is hotter or equal to slated temperature, turn on fan
+        if (sensor_data["temperature"] >= user_setting["user_temp"]):
+            fanState = True
+        # else, turn it off
+        else:
+            fanState = False
+
+        # if current time is equal to the slated turn on time, turn on light
+        if (user_setting["user_light"] == sensor_data["datetime"]):
+            lightState =  True
+    
+        else:
+            on_check = await db["data"].find_one({"datetime": user_setting["user_light"]})
+            off_check = await db["data"].find_one({"datetime": user_setting["light_time_off"]})
+            
+            # if current time is equal to the slated turn off time, turn off light
+            if (user_setting["light_time_off"] == sensor_data["datetime"]):
+                lightState =  False
+            else:
+                # if a previous current time matches with the setting OFF time, that means the light off time has passed and light should be off
+                if(off_check != ""):
+                    lightState = False
+                # if off time has NOT passed, check if ON time has passed
+                else:
+                    # if a previous current time matches with the setting time, that means the light was on but hasn't turn off yet, therefore must be on
+                    if(on_check != ""):
+                        lightState = True
+                    # otherwise, the turn on time hasn't come, light must be off
+                    else:
+                        lightState = False
+
+
+        return_sensor_data = {
+        "fan": fanState,
+        "light": lightState
+        }
+
+    # if no one in room, everything off
+    else:
+        return_sensor_data = {
+        "fan": False,
+        "light": False
+    }
+    return return_sensor_data
+
+@app.get("/fan",status_code=200)
 async def fan_control():
     data = await db["sensorData"].find().to_list(999)
-    num = len(data) - 1
+    num = len(data) -1
     sensors = data[num]
 
     all_settings = await db["settings"].find().to_list(999)
@@ -134,15 +194,16 @@ async def fan_control():
 
     if (sensors["presence"] == True):
 
-        if (sensors["temperature"] >= user_pref["user_temp"]):
-            fanState = True
+        if(sensors["temperature"]>=user_pref["user_temp"]):
+            fanstate = True
+
         else:
-            fanState = False
+            fanstate = False
     else:
-        fanState = False
-    
+        fanstate = False
+
     componentState = {
-        "fan": fanState
+        "fan": fanstate
     }
 
     return componentState
@@ -150,26 +211,21 @@ async def fan_control():
 @app.get("/light", status_code=200)
 async def light_control():
     data = await db["sensorData"].find().to_list(999)
-    num = len(data) - 1
+    num = len(data) -1
     sensors = data[num]
+
 
     all_settings = await db["settings"].find().to_list(999)
     user_pref = all_settings[0]
 
-    set_start_time = datetime.strptime(user_pref["user_light"], '%H:%M:%S')
-    set_end_time = datetime.strptime(user_pref["light_time_off"], '%H:%M:%S')
-    current_time = datetime.strptime(sensors["datetime"], '%H:%M:%S')
+    if(sensors["presence"] == True):
 
-    if (sensors["presence"] == True):
-        if ((current_time>set_start_time) & (current_time<set_end_time)):
-                lightState = True
+        if(sensors["temperature"] >= user_pref["user_temp"]):
+            lightstate =True
         else:
-                lightState = False
-    else:
-        lightState = False
-    
-    componentState = {
-        "light": lightState
+            lightstate = False
+    componentState ={
+        "light" : lightstate
     }
 
     return componentState
